@@ -347,6 +347,7 @@ async def update_activity(req: UpdateRequest):
             results.append({"device_id": device_id, "success": False, "error": "rate_limited"})
             continue
 
+        log.info("Sending payload: %s", json.dumps(payload, indent=2))
         success, msg = await _send_apns_push(push_token, payload)
         results.append({"device_id": device_id, "success": success, "message": msg})
 

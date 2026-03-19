@@ -207,7 +207,7 @@ class UpdateRequest(BaseModel):
     entity_id: str
     state: str
     end_time: str | None = None
-    total_duration: float | None = None
+    total_duration: str | float | None = None
     device_name: str | None = None
     icon_name: str | None = None
     accent_color_hex: str | None = None
@@ -277,9 +277,24 @@ async def update_activity(req: UpdateRequest):
 
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
     if req.end_time:
-        content_state["endTime"] = req.end_time
+        # Convert ISO8601 to Unix timestamp (ActivityKit expects seconds since 1970)
+        try:
+            from datetime import datetime as dt
+            end_dt = dt.fromisoformat(req.end_time)
+            content_state["endTime"] = end_dt.timestamp()
+        except (ValueError, TypeError):
+            content_state["endTime"] = req.end_time
     if req.total_duration is not None:
-        content_state["totalDuration"] = req.total_duration
+        # Ensure totalDuration is a number (seconds)
+        if isinstance(req.total_duration, str):
+            # Parse "H:MM:SS" format
+            parts = str(req.total_duration).split(":")
+            if len(parts) == 3:
+                content_state["totalDuration"] = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            else:
+                content_state["totalDuration"] = float(req.total_duration)
+        else:
+            content_state["totalDuration"] = float(req.total_duration)
 
     if is_start:
         # Start a NEW Live Activity via push

@@ -277,11 +277,14 @@ async def update_activity(req: UpdateRequest):
 
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
     if req.end_time:
-        # Convert ISO8601 to Unix timestamp (ActivityKit expects seconds since 1970)
+        # Convert ISO8601 to Apple's reference date (seconds since 2001-01-01)
+        # Swift's default Date Codable uses timeIntervalSinceReferenceDate
+        APPLE_REFERENCE_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
         try:
             from datetime import datetime as dt
             end_dt = dt.fromisoformat(req.end_time)
-            content_state["endTime"] = end_dt.timestamp()
+            unix_ts = end_dt.timestamp()
+            content_state["endTime"] = unix_ts - APPLE_REFERENCE_OFFSET
         except (ValueError, TypeError):
             content_state["endTime"] = req.end_time
     if req.total_duration is not None:

@@ -275,29 +275,48 @@ async def update_activity(req: UpdateRequest):
     is_start = req.state == "active"
     is_end = req.state in ("finished", "idle")
 
+    APPLE_REFERENCE_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
+
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
+
+    # Parse end_time (ISO8601 -> Apple reference date for Swift Codable)
+    end_time_apple: float | None = None
     if req.end_time:
-        # Convert ISO8601 to Apple's reference date (seconds since 2001-01-01)
-        # Swift's default Date Codable uses timeIntervalSinceReferenceDate
-        APPLE_REFERENCE_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
         try:
             from datetime import datetime as dt
             end_dt = dt.fromisoformat(req.end_time)
             unix_ts = end_dt.timestamp()
-            content_state["endTime"] = unix_ts - APPLE_REFERENCE_OFFSET
+            end_time_apple = unix_ts - APPLE_REFERENCE_OFFSET
         except (ValueError, TypeError):
-            content_state["endTime"] = req.end_time
+            log.warning("Could not parse end_time: %s", req.end_time)
+
+    # Parse total_duration (H:MM:SS string or numeric seconds)
+    total_duration_secs: float | None = None
     if req.total_duration is not None:
-        # Ensure totalDuration is a number (seconds)
         if isinstance(req.total_duration, str):
-            # Parse "H:MM:SS" format
             parts = str(req.total_duration).split(":")
             if len(parts) == 3:
-                content_state["totalDuration"] = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                total_duration_secs = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
             else:
-                content_state["totalDuration"] = float(req.total_duration)
+                try:
+                    total_duration_secs = float(req.total_duration)
+                except ValueError:
+                    log.warning("Could not parse total_duration: %s", req.total_duration)
         else:
-            content_state["totalDuration"] = float(req.total_duration)
+            total_duration_secs = float(req.total_duration)
+
+    if is_end:
+        # For end events: endTime = now, totalDuration = 0 (timer is done)
+        now_apple = time.time() - APPLE_REFERENCE_OFFSET
+        content_state["endTime"] = now_apple
+        content_state["totalDuration"] = total_duration_secs if total_duration_secs is not None else 0.0
+        content_state["progress"] = 1.0
+    else:
+        # For active/paused: use provided values
+        if end_time_apple is not None:
+            content_state["endTime"] = end_time_apple
+        if total_duration_secs is not None:
+            content_state["totalDuration"] = total_duration_secs
 
     if is_start:
         # Start a NEW Live Activity via push

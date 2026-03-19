@@ -272,6 +272,7 @@ async def update_activity(req: UpdateRequest):
     if not targets:
         return {"status": "no_targets", "message": "No devices registered for this entity"}
 
+    is_start = req.state == "active"
     is_end = req.state in ("finished", "idle")
 
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
@@ -280,16 +281,45 @@ async def update_activity(req: UpdateRequest):
     if req.total_duration is not None:
         content_state["totalDuration"] = req.total_duration
 
-    payload = {
-        "aps": {
-            "timestamp": int(time.time()),
-            "event": "end" if is_end else "update",
-            "content-state": content_state,
-        },
-    }
-
-    if is_end:
-        payload["aps"]["dismissal-date"] = int(time.time()) + 10
+    if is_start:
+        # Start a NEW Live Activity via push
+        payload = {
+            "aps": {
+                "timestamp": int(time.time()),
+                "event": "start",
+                "content-state": content_state,
+                "attributes-type": "TimerActivityAttributes",
+                "attributes": {
+                    "entityID": req.entity_id,
+                    "deviceName": req.device_name or req.entity_id,
+                    "iconName": req.icon_name or "timer",
+                    "accentColorHex": req.accent_color_hex or "#FF8C00",
+                    "invertProgress": req.invert_progress,
+                },
+                "alert": {
+                    "title": req.device_name or req.entity_id,
+                    "body": "Timer gestartet",
+                },
+            },
+        }
+    elif is_end:
+        payload = {
+            "aps": {
+                "timestamp": int(time.time()),
+                "event": "end",
+                "content-state": content_state,
+                "dismissal-date": int(time.time()) + 10,
+            },
+        }
+    else:
+        # Pause or other update
+        payload = {
+            "aps": {
+                "timestamp": int(time.time()),
+                "event": "update",
+                "content-state": content_state,
+            },
+        }
 
     results = []
     for device_id, device in targets:

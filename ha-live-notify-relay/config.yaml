@@ -1,0 +1,32 @@
+name: HA Live Notify Relay
+version: "1.0.0"
+slug: ha-live-notify-relay
+description: Push-Relay for iOS Live Activity notifications from Home Assistant timers.
+url: https://github.com/davo899/ha-live-notify-addon
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - i386
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: Push Relay API
+map:
+  - addon_config:rw
+options:
+  apns_key_id: ""
+  apns_team_id: ""
+  apns_bundle_id: "ios.ha-live-notify"
+  apns_use_sandbox: true
+  max_pushes_per_minute: 30
+schema:
+  apns_key_id: str
+  apns_team_id: str
+  apns_bundle_id: str
+  apns_use_sandbox: bool
+  max_pushes_per_minute: int
+startup: application
+boot: auto
+ingress: false
+panel_icon: mdi:bell-ring

@@ -1,8 +1,9 @@
 name: HA Live Notify Relay
-version: "1.0.3"
+version: "1.0.4"
 slug: ha-live-notify-relay
 description: Push-Relay for iOS Live Activity notifications from Home Assistant timers.
-url: https://github.com/davo899/ha-live-notify-addon
+url: https://github.com/agrestisdavid/ha-live-notify-addon
+init: false
 arch:
   - aarch64
   - amd64
@@ -13,7 +14,8 @@ ports:
 ports_description:
   8765/tcp: Push Relay API
 map:
-  - addon_config:rw
+  - type: addon_config
+    read_only: false
 options:
   apns_key_id: ""
   apns_team_id: ""
@@ -30,3 +32,4 @@ startup: application
 boot: auto
 ingress: false
 panel_icon: mdi:bell-ring
+watchdog: "http://[HOST]:8765/health"

@@ -1,5 +1,5 @@
 name: HA Live Notify Relay
-version: "1.0.4"
+version: "1.0.5"
 slug: ha-live-notify-relay
 description: Push-Relay for iOS Live Activity notifications from Home Assistant timers.
 url: https://github.com/agrestisdavid/ha-live-notify-addon

@@ -1,16 +1,15 @@
 ARG BUILD_FROM
-FROM python:3.12-slim
+FROM ${BUILD_FROM}
 
-# Working directory
+# Install Python and pip
+RUN apk add --no-cache python3 py3-pip py3-cryptography
+
 WORKDIR /app
 
-# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-# Copy application
 COPY server.py .
 
-EXPOSE 8765
-
-CMD [ "python3", "/app/server.py" ]
+# s6-overlay v3 service
+COPY s6-overlay /etc/s6-overlay/

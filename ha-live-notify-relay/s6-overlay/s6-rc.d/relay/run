@@ -1,0 +1,14 @@
+#!/command/with-contenv bashio
+
+# Read config from HA Add-on options
+export APNS_KEY_ID=$(bashio::config 'apns_key_id')
+export APNS_TEAM_ID=$(bashio::config 'apns_team_id')
+export APNS_BUNDLE_ID=$(bashio::config 'apns_bundle_id')
+export APNS_USE_SANDBOX=$(bashio::config 'apns_use_sandbox')
+export MAX_PUSHES_PER_MINUTE=$(bashio::config 'max_pushes_per_minute')
+export APNS_KEY_PATH="/config/AuthKey.p8"
+export API_KEY_PATH="/config/api_key.txt"
+
+bashio::log.info "Starting HA Live Notify Relay..."
+
+exec python3 /app/server.py

@@ -20,18 +20,27 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# --- Configuration ---
+# --- Configuration (read from HA Add-on options.json or env) ---
+
+def _load_addon_options() -> dict:
+    """Load options from HA Add-on options.json if available."""
+    options_path = Path("/data/options.json")
+    if options_path.exists():
+        return json.loads(options_path.read_text())
+    return {}
+
+_opts = _load_addon_options()
 
 APNS_KEY_PATH = os.getenv("APNS_KEY_PATH", "/config/AuthKey.p8")
-APNS_KEY_ID = os.getenv("APNS_KEY_ID", "")
-APNS_TEAM_ID = os.getenv("APNS_TEAM_ID", "")
-APNS_BUNDLE_ID = os.getenv("APNS_BUNDLE_ID", "ios.ha-live-notify")
-APNS_USE_SANDBOX = os.getenv("APNS_USE_SANDBOX", "true").lower() == "true"
+APNS_KEY_ID = _opts.get("apns_key_id") or os.getenv("APNS_KEY_ID", "")
+APNS_TEAM_ID = _opts.get("apns_team_id") or os.getenv("APNS_TEAM_ID", "")
+APNS_BUNDLE_ID = _opts.get("apns_bundle_id") or os.getenv("APNS_BUNDLE_ID", "ios.ha-live-notify")
+APNS_USE_SANDBOX = _opts.get("apns_use_sandbox", True) if "apns_use_sandbox" in _opts else os.getenv("APNS_USE_SANDBOX", "true").lower() == "true"
 
 API_KEY_PATH = os.getenv("API_KEY_PATH", "/config/api_key.txt")
 API_KEY = os.getenv("API_KEY", "")
 
-MAX_PUSHES_PER_MINUTE = int(os.getenv("MAX_PUSHES_PER_MINUTE", "30"))
+MAX_PUSHES_PER_MINUTE = _opts.get("max_pushes_per_minute") or int(os.getenv("MAX_PUSHES_PER_MINUTE", "30"))
 
 # --- Logging ---
 

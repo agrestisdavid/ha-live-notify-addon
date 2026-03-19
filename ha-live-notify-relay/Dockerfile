@@ -16,6 +16,6 @@ COPY server.py .
 COPY run.sh /
 
 # Make run script executable
-RUN chmod +x /run.sh
+RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]

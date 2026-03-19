@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv bashio
+#!/usr/bin/env bashio
 # ==============================================================================
 # ha-live-notify-relay startup script
 # ==============================================================================
@@ -17,18 +17,18 @@ export API_KEY_PATH="/config/api_key.txt"
 # Validate APNs key exists
 if [ ! -f "$APNS_KEY_PATH" ]; then
     bashio::log.error "APNs key not found at $APNS_KEY_PATH"
-    bashio::log.error "Please upload your AuthKey.p8 file to /addon_configs/ha-live-notify-relay/"
+    bashio::log.error "Please upload your AuthKey.p8 to /addon_configs/$(hostname)/"
     bashio::exit.nok
 fi
 
 # Validate required config
-if [ -z "$APNS_KEY_ID" ] || [ "$APNS_KEY_ID" = "null" ]; then
-    bashio::log.error "apns_key_id is not configured"
+if [ -z "$APNS_KEY_ID" ] || [ "$APNS_KEY_ID" = "null" ] || [ "$APNS_KEY_ID" = "" ]; then
+    bashio::log.error "apns_key_id is not configured in add-on settings"
     bashio::exit.nok
 fi
 
-if [ -z "$APNS_TEAM_ID" ] || [ "$APNS_TEAM_ID" = "null" ]; then
-    bashio::log.error "apns_team_id is not configured"
+if [ -z "$APNS_TEAM_ID" ] || [ "$APNS_TEAM_ID" = "null" ] || [ "$APNS_TEAM_ID" = "" ]; then
+    bashio::log.error "apns_team_id is not configured in add-on settings"
     bashio::exit.nok
 fi
 

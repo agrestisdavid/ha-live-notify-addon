@@ -197,10 +197,18 @@ async def _send_apns_push(push_token: str, payload: dict) -> tuple[bool, str]:
 # --- Models ---
 
 
+class EntityConfig(BaseModel):
+    entity_id: str
+    icon_name: str = "timer"
+    color_hex: str = "#FF8C00"
+    invert_progress: bool = False
+
+
 class RegisterRequest(BaseModel):
     device_id: str
     push_token: str
     entity_ids: list[str]
+    entity_configs: list[EntityConfig] | None = None
 
 
 class UpdateRequest(BaseModel):
@@ -248,9 +256,20 @@ async def register_device(req: RegisterRequest):
     if not all(c in "0123456789abcdefABCDEF" for c in clean_token):
         raise HTTPException(status_code=400, detail="Invalid push token format")
 
+    # Build entity config lookup
+    configs = {}
+    if req.entity_configs:
+        for ec in req.entity_configs:
+            configs[ec.entity_id] = {
+                "icon_name": ec.icon_name,
+                "color_hex": ec.color_hex,
+                "invert_progress": ec.invert_progress,
+            }
+
     registered_devices[req.device_id] = {
         "push_token": clean_token,
         "entity_ids": req.entity_ids,
+        "entity_configs": configs,
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -319,6 +338,13 @@ async def update_activity(req: UpdateRequest):
             content_state["totalDuration"] = total_duration_secs
 
     if is_start:
+        # Look up entity config from registered device
+        entity_config = _get_entity_config(req.entity_id)
+        icon_name = entity_config.get("icon_name", "timer") if entity_config else "timer"
+        color_hex = entity_config.get("color_hex", "#FF8C00") if entity_config else "#FF8C00"
+        invert_progress = entity_config.get("invert_progress", False) if entity_config else False
+        device_name = req.device_name or req.entity_id
+
         # Start a NEW Live Activity via push
         payload = {
             "aps": {
@@ -328,13 +354,13 @@ async def update_activity(req: UpdateRequest):
                 "attributes-type": "TimerActivityAttributes",
                 "attributes": {
                     "entityID": req.entity_id,
-                    "deviceName": req.device_name or req.entity_id,
-                    "iconName": req.icon_name or "timer",
-                    "accentColorHex": req.accent_color_hex or "#FF8C00",
-                    "invertProgress": req.invert_progress,
+                    "deviceName": device_name,
+                    "iconName": icon_name,
+                    "accentColorHex": color_hex,
+                    "invertProgress": invert_progress,
                 },
                 "alert": {
-                    "title": req.device_name or req.entity_id,
+                    "title": device_name,
                     "body": "Timer gestartet",
                 },
             },
@@ -379,6 +405,15 @@ def _find_devices_for_entity(entity_id: str) -> list[tuple[str, dict]]:
         for device_id, device in registered_devices.items()
         if entity_id in device["entity_ids"]
     ]
+
+
+def _get_entity_config(entity_id: str) -> dict | None:
+    """Look up entity config (icon, color, invertProgress) from any registered device."""
+    for device in registered_devices.values():
+        configs = device.get("entity_configs", {})
+        if entity_id in configs:
+            return configs[entity_id]
+    return None
 
 
 @app.exception_handler(Exception)

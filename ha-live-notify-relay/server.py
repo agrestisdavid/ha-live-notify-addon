@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -42,6 +43,15 @@ API_KEY = os.getenv("API_KEY", "")
 
 MAX_PUSHES_PER_MINUTE = _opts.get("max_pushes_per_minute") or int(os.getenv("MAX_PUSHES_PER_MINUTE", "30"))
 
+# #13: Maximum registered devices
+MAX_DEVICES = 50
+
+# #24: Global push rate limit (all tokens combined)
+GLOBAL_MAX_PUSHES_PER_MINUTE = 100
+
+# #12: Device persistence path
+DEVICES_FILE_PATH = Path("/config/devices.json")
+
 # --- Logging ---
 
 logging.basicConfig(
@@ -63,7 +73,43 @@ app = FastAPI(
 
 registered_devices: dict[str, dict] = {}
 push_timestamps: dict[str, list[float]] = {}
+# #24: Global push timestamps
+_global_push_timestamps: list[float] = []
 _apns_jwt_cache: dict[str, str | float] = {"token": "", "expires": 0}
+# #16: Cached APNs key content
+_apns_key_content: str | None = None
+# #15: Global httpx client (created at startup, reused)
+_apns_client: httpx.AsyncClient | None = None
+# #14: Registration rate limiting (IP -> list of timestamps)
+_registration_timestamps: dict[str, list[float]] = {}
+MAX_REGISTRATIONS_PER_MINUTE = 10
+
+# #17: entity_id format validation
+ENTITY_ID_PATTERN = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+
+
+# --- Persistence (#12) ---
+
+
+def _save_devices():
+    """Persist registered_devices to disk."""
+    try:
+        DEVICES_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEVICES_FILE_PATH.write_text(json.dumps(registered_devices, indent=2))
+    except Exception:
+        log.exception("Failed to save devices to %s", DEVICES_FILE_PATH)
+
+
+def _load_devices():
+    """Load registered_devices from disk on startup."""
+    global registered_devices
+    if DEVICES_FILE_PATH.exists():
+        try:
+            registered_devices = json.loads(DEVICES_FILE_PATH.read_text())
+            log.info("Loaded %d devices from %s", len(registered_devices), DEVICES_FILE_PATH)
+        except Exception:
+            log.exception("Failed to load devices from %s", DEVICES_FILE_PATH)
+            registered_devices = {}
 
 
 # --- Security ---
@@ -85,11 +131,8 @@ def _load_or_generate_api_key() -> str:
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_text(API_KEY)
     key_path.chmod(0o600)
-    log.info("Generated new API key → %s", API_KEY_PATH)
-    log.info("=" * 60)
-    log.info("API KEY: %s", API_KEY)
-    log.info("Copy this key to the iOS app settings!")
-    log.info("=" * 60)
+    # #10: Never log the API key itself
+    log.info("Generated new API key → saved to %s (read it there)", API_KEY_PATH)
     return API_KEY
 
 
@@ -121,14 +164,49 @@ def _check_rate_limit(push_token: str) -> bool:
     return True
 
 
+def _check_global_rate_limit() -> bool:
+    """#24: Check global push rate limit across all tokens."""
+    now = time.time()
+    global _global_push_timestamps
+    _global_push_timestamps = [t for t in _global_push_timestamps if now - t < 60]
+
+    if len(_global_push_timestamps) >= GLOBAL_MAX_PUSHES_PER_MINUTE:
+        return False
+    _global_push_timestamps.append(now)
+    return True
+
+
+def _check_registration_rate_limit(client_ip: str) -> bool:
+    """#14: Rate limit registrations per IP."""
+    now = time.time()
+    timestamps = _registration_timestamps.get(client_ip, [])
+    timestamps = [t for t in timestamps if now - t < 60]
+    _registration_timestamps[client_ip] = timestamps
+
+    if len(timestamps) >= MAX_REGISTRATIONS_PER_MINUTE:
+        return False
+    timestamps.append(now)
+    return True
+
+
+def _validate_entity_id(entity_id: str) -> bool:
+    """#17: Validate entity_id format."""
+    return bool(ENTITY_ID_PATTERN.match(entity_id))
+
+
 # --- APNs ---
 
 
 def _load_apns_key() -> str:
+    """#16: Return cached APNs key content, or read from disk on first call."""
+    global _apns_key_content
+    if _apns_key_content is not None:
+        return _apns_key_content
     key_path = Path(APNS_KEY_PATH)
     if not key_path.exists():
         raise RuntimeError(f"APNs key not found: {APNS_KEY_PATH}")
-    return key_path.read_text()
+    _apns_key_content = key_path.read_text()
+    return _apns_key_content
 
 
 def _get_apns_jwt() -> str:
@@ -167,31 +245,36 @@ async def _send_apns_push(push_token: str, payload: dict) -> tuple[bool, str]:
     if len(body.encode()) > 4096:
         return False, "Payload exceeds 4KB APNs limit"
 
-    async with httpx.AsyncClient(http2=True) as client:
-        try:
-            resp = await client.post(url, content=body, headers=headers, timeout=10)
+    # #15: Use global httpx client instead of creating per-request
+    client = _apns_client
+    if client is None:
+        return False, "APNs client not initialized"
 
-            if resp.status_code == 200:
-                log.info("APNs push OK → %s...%s", push_token[:8], push_token[-4:])
-                return True, "ok"
+    try:
+        resp = await client.post(url, content=body, headers=headers, timeout=10)
 
-            error_body = resp.text
-            log.error("APNs error %d: %s", resp.status_code, error_body)
+        if resp.status_code == 200:
+            log.info("APNs push OK → %s...%s", push_token[:8], push_token[-4:])
+            return True, "ok"
 
-            if resp.status_code == 410:
-                for device_id, device in list(registered_devices.items()):
-                    if device["push_token"] == push_token:
-                        del registered_devices[device_id]
-                        log.info("Removed expired device: %s", device_id)
-                return False, "Token expired - device removed"
+        error_body = resp.text
+        log.error("APNs error %d: %s", resp.status_code, error_body)
 
-            return False, f"APNs error {resp.status_code}: {error_body}"
+        if resp.status_code == 410:
+            for device_id, device in list(registered_devices.items()):
+                if device["push_token"] == push_token:
+                    del registered_devices[device_id]
+                    _save_devices()
+                    log.info("Removed expired device: %s", device_id)
+            return False, "Token expired - device removed"
 
-        except httpx.TimeoutException:
-            return False, "APNs request timed out"
-        except Exception as e:
-            log.exception("APNs request failed")
-            return False, str(e)
+        return False, f"APNs error {resp.status_code}: {error_body}"
+
+    except httpx.TimeoutException:
+        return False, "APNs request timed out"
+    except Exception as e:
+        log.exception("APNs request failed")
+        return False, str(e)
 
 
 # --- Models ---
@@ -227,30 +310,57 @@ class UpdateRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup():
+    global _apns_client
     _load_or_generate_api_key()
+    # #12: Load persisted devices
+    _load_devices()
+    # #16: Cache APNs key at startup
     try:
         _load_apns_key()
         log.info("APNs key loaded OK")
     except RuntimeError as e:
         log.warning("APNs key missing: %s", e)
+    # #15: Create global httpx client
+    _apns_client = httpx.AsyncClient(http2=True)
     log.info("Push Relay started (sandbox=%s, port=8765)", APNS_USE_SANDBOX)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """#15: Clean up global httpx client on shutdown."""
+    global _apns_client
+    if _apns_client:
+        await _apns_client.aclose()
+        _apns_client = None
+    log.info("Push Relay shut down")
 
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "registered_devices": len(registered_devices),
-        "apns_sandbox": APNS_USE_SANDBOX,
-    }
+    # #11: Only return status, no device count for unauthenticated endpoint
+    return {"status": "ok"}
 
 
 @app.post("/register", dependencies=[Depends(verify_api_key)])
-async def register_device(req: RegisterRequest):
+async def register_device(req: RegisterRequest, request: Request):
     if not req.device_id or not req.push_token:
         raise HTTPException(status_code=400, detail="device_id and push_token required")
     if not req.entity_ids:
         raise HTTPException(status_code=400, detail="At least one entity_id required")
+
+    # #17: Validate entity_id format
+    for eid in req.entity_ids:
+        if not _validate_entity_id(eid):
+            raise HTTPException(status_code=400, detail=f"Invalid entity_id format: {eid}")
+
+    # #14: Rate limit registrations per IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_registration_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many registrations, try again later")
+
+    # #13: Reject if at device limit (unless updating existing device)
+    if req.device_id not in registered_devices and len(registered_devices) >= MAX_DEVICES:
+        raise HTTPException(status_code=429, detail=f"Maximum device limit ({MAX_DEVICES}) reached")
 
     clean_token = req.push_token.strip().replace(" ", "").replace("<", "").replace(">", "")
     if not all(c in "0123456789abcdefABCDEF" for c in clean_token):
@@ -273,6 +383,9 @@ async def register_device(req: RegisterRequest):
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    # #12: Persist on every registration change
+    _save_devices()
+
     log.info("Registered device %s for %s", req.device_id[:8], req.entity_ids)
     return {"status": "registered", "device_id": req.device_id}
 
@@ -281,12 +394,18 @@ async def register_device(req: RegisterRequest):
 async def unregister_device(device_id: str):
     if device_id in registered_devices:
         del registered_devices[device_id]
+        # #12: Persist on every registration change
+        _save_devices()
         return {"status": "unregistered"}
     raise HTTPException(status_code=404, detail="Device not found")
 
 
 @app.post("/update", dependencies=[Depends(verify_api_key)])
 async def update_activity(req: UpdateRequest):
+    # #17: Validate entity_id format
+    if not _validate_entity_id(req.entity_id):
+        raise HTTPException(status_code=400, detail=f"Invalid entity_id format: {req.entity_id}")
+
     targets = _find_devices_for_entity(req.entity_id)
     if not targets:
         return {"status": "no_targets", "message": "No devices registered for this entity"}
@@ -392,8 +511,15 @@ async def update_activity(req: UpdateRequest):
             results.append({"device_id": device_id, "success": False, "error": "rate_limited"})
             continue
 
-        log.info("Sending payload: %s", json.dumps(payload, indent=2))
+        # #24: Check global rate limit
+        if not _check_global_rate_limit():
+            results.append({"device_id": device_id, "success": False, "error": "global_rate_limited"})
+            continue
+
+        # #18: Full payload only at DEBUG level; INFO only logs entity_id
+        log.debug("Sending payload: %s", json.dumps(payload, indent=2))
         success, msg = await _send_apns_push(push_token, payload)
+        log.info("Push %s → entity=%s device=%s", "OK" if success else "FAIL", req.entity_id, device_id[:8])
         results.append({"device_id": device_id, "success": success, "message": msg})
 
     return {"status": "sent", "results": results}

@@ -1,54 +1,54 @@
 # HA Live Notify - Push Relay Add-on
 
-Home Assistant Add-on das Push-Benachrichtigungen für iOS Live Activities weiterleitet.
+Home Assistant Add-on that relays push notifications for iOS Live Activities.
 
 ## Installation
 
-1. Gehe zu **Settings** → **Add-ons** → **Add-on Store**
-2. Klicke auf **⋮** (drei Punkte oben rechts) → **Repositories**
-3. Füge diese URL hinzu: `https://github.com/agrestisdavid/ha-live-notify-addon`
-4. Suche nach **"HA Live Notify Relay"** und klicke auf **Installieren**
-5. Starte das Add-on
+1. Go to **Settings** → **Add-ons** → **Add-on Store**
+2. Click **⋮** (three dots top right) → **Repositories**
+3. Add this URL: `https://github.com/agrestisdavid/ha-live-notify-addon`
+4. Search for **"HA Live Notify Relay"** and click **Install**
+5. Start the add-on
 
-## Konfiguration
+## Configuration
 
-| Feld | Beschreibung |
-|------|-------------|
-| `apns_key_id` | Die Key ID deines APNs Keys (10-stellig, z.B. `ABC1234DEF`) |
-| `apns_team_id` | Deine Apple Developer Team ID (10-stellig) |
-| `apns_bundle_id` | Die Bundle ID der iOS App (Standard: `ios.ha-live-notify`) |
-| `apns_use_sandbox` | `true` für Entwicklung/Debug-Builds, `false` für Production/TestFlight |
-| `max_pushes_per_minute` | Maximale Push-Nachrichten pro Minute pro Gerät (Standard: `30`) |
+| Field | Description |
+|-------|-------------|
+| `apns_key_id` | Your APNs Key ID (10 characters, e.g. `ABC1234DEF`) |
+| `apns_team_id` | Your Apple Developer Team ID (10 characters) |
+| `apns_bundle_id` | The iOS app bundle ID (default: `ios.ha-live-notify`) |
+| `apns_use_sandbox` | `true` for development/debug builds, `false` for production/TestFlight |
+| `max_pushes_per_minute` | Maximum push messages per minute per device (default: `30`) |
 
-Zusätzlich muss die Datei `AuthKey.p8` (APNs Schlüssel) in den Add-on Konfigurationsordner kopiert werden:
-- Pfad: `/addon_configs/ha-live-notify-relay/AuthKey.p8`
-- Übertragung via Samba Share oder SSH
+Additionally, the `AuthKey.p8` file (APNs key) must be copied to the add-on config directory:
+- Path: `/addon_configs/ha-live-notify-relay/AuthKey.p8`
+- Transfer via Samba share or SSH
 
 ## API Key
 
-Beim ersten Start generiert das Add-on automatisch einen API Key. Diesen findest du:
-- In den **Add-on Logs** (nach dem ersten Start)
-- In der Datei `/addon_configs/ha-live-notify-relay/api_key.txt`
+On first start, the add-on automatically generates an API key. You can find it:
+- In the **Add-on Logs** (after first start)
+- In the file `/addon_configs/ha-live-notify-relay/api_key.txt`
 
-Der API Key wird für die Authentifizierung der iOS App und der HA rest_commands benötigt.
+The API key is required for authentication of the iOS app and HA rest_commands.
 
-## Endpunkte
+## Endpoints
 
-| Endpunkt | Methode | Auth | Beschreibung |
-|----------|---------|------|-------------|
-| `/health` | GET | Nein | Health-Check |
-| `/register` | POST | Ja | Gerät für Push-Nachrichten registrieren |
-| `/unregister` | POST | Ja | Geräteregistrierung entfernen |
-| `/update` | POST | Ja | Timer-Update an registrierte Geräte senden |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/health` | GET | No | Health check |
+| `/register` | POST | Yes | Register device for push notifications |
+| `/unregister` | POST | Yes | Remove device registration |
+| `/update` | POST | Yes | Send timer update to registered devices |
 
-## Zusammen mit der iOS App
+## Used with the iOS App
 
-Dieses Add-on ist der Server-Teil von **HA Live Notify**. Die iOS App findest du hier:
+This add-on is the server component of **HA Live Notify**. Find the iOS app here:
 
 [https://github.com/agrestisdavid/ha-live-notify](https://github.com/agrestisdavid/ha-live-notify)
 
-Die vollständige Setup-Anleitung (inkl. APNs Key, App-Installation und HA-Konfiguration) findest du im README der iOS App.
+The full setup guide (including APNs key, app installation, and HA configuration) can be found in the iOS app README.
 
-## Lizenz
+## License
 
 MIT

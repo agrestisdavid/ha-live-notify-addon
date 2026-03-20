@@ -1,8 +1,3 @@
-"""
-ha-live-notify Push Relay Server (HA Add-on)
-Receives timer updates from Home Assistant and pushes them to iOS Live Activities via APNs.
-"""
-
 import hashlib
 import hmac
 import json
@@ -21,14 +16,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# --- Configuration (read from HA Add-on options.json or env) ---
 
 def _load_addon_options() -> dict:
-    """Load options from HA Add-on options.json if available."""
     options_path = Path("/data/options.json")
     if options_path.exists():
         return json.loads(options_path.read_text())
     return {}
+
 
 _opts = _load_addon_options()
 
@@ -43,24 +37,17 @@ API_KEY = os.getenv("API_KEY", "")
 
 MAX_PUSHES_PER_MINUTE = _opts.get("max_pushes_per_minute") or int(os.getenv("MAX_PUSHES_PER_MINUTE", "30"))
 
-# #13: Maximum registered devices
 MAX_DEVICES = 50
 
-# #24: Global push rate limit (all tokens combined)
 GLOBAL_MAX_PUSHES_PER_MINUTE = 100
 
-# #12: Device persistence path
 DEVICES_FILE_PATH = Path("/config/devices.json")
-
-# --- Logging ---
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("push-relay")
-
-# --- App ---
 
 app = FastAPI(
     title="ha-live-notify Push Relay",
@@ -69,32 +56,20 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# --- State ---
-
 registered_devices: dict[str, dict] = {}
-# Track entities with active Live Activities to avoid duplicate starts
 _active_entities: set[str] = set()
 push_timestamps: dict[str, list[float]] = {}
-# #24: Global push timestamps
 _global_push_timestamps: list[float] = []
 _apns_jwt_cache: dict[str, str | float] = {"token": "", "expires": 0}
-# #16: Cached APNs key content
 _apns_key_content: str | None = None
-# #15: Global httpx client (created at startup, reused)
 _apns_client: httpx.AsyncClient | None = None
-# #14: Registration rate limiting (IP -> list of timestamps)
 _registration_timestamps: dict[str, list[float]] = {}
 MAX_REGISTRATIONS_PER_MINUTE = 10
 
-# #17: entity_id format validation
 ENTITY_ID_PATTERN = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 
 
-# --- Persistence (#12) ---
-
-
 def _save_devices():
-    """Persist registered_devices to disk."""
     try:
         DEVICES_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         DEVICES_FILE_PATH.write_text(json.dumps(registered_devices, indent=2))
@@ -103,7 +78,6 @@ def _save_devices():
 
 
 def _load_devices():
-    """Load registered_devices from disk on startup."""
     global registered_devices
     if DEVICES_FILE_PATH.exists():
         try:
@@ -112,9 +86,6 @@ def _load_devices():
         except Exception:
             log.exception("Failed to load devices from %s", DEVICES_FILE_PATH)
             registered_devices = {}
-
-
-# --- Security ---
 
 
 def _load_or_generate_api_key() -> str:
@@ -133,7 +104,6 @@ def _load_or_generate_api_key() -> str:
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_text(API_KEY)
     key_path.chmod(0o600)
-    # #10: Never log the API key itself
     log.info("Generated new API key → saved to %s (read it there)", API_KEY_PATH)
     return API_KEY
 
@@ -167,7 +137,6 @@ def _check_rate_limit(push_token: str) -> bool:
 
 
 def _check_global_rate_limit() -> bool:
-    """#24: Check global push rate limit across all tokens."""
     now = time.time()
     global _global_push_timestamps
     _global_push_timestamps = [t for t in _global_push_timestamps if now - t < 60]
@@ -179,7 +148,6 @@ def _check_global_rate_limit() -> bool:
 
 
 def _check_registration_rate_limit(client_ip: str) -> bool:
-    """#14: Rate limit registrations per IP."""
     now = time.time()
     timestamps = _registration_timestamps.get(client_ip, [])
     timestamps = [t for t in timestamps if now - t < 60]
@@ -192,15 +160,10 @@ def _check_registration_rate_limit(client_ip: str) -> bool:
 
 
 def _validate_entity_id(entity_id: str) -> bool:
-    """#17: Validate entity_id format."""
     return bool(ENTITY_ID_PATTERN.match(entity_id))
 
 
-# --- APNs ---
-
-
 def _load_apns_key() -> str:
-    """#16: Return cached APNs key content, or read from disk on first call."""
     global _apns_key_content
     if _apns_key_content is not None:
         return _apns_key_content
@@ -247,7 +210,6 @@ async def _send_apns_push(push_token: str, payload: dict) -> tuple[bool, str]:
     if len(body.encode()) > 4096:
         return False, "Payload exceeds 4KB APNs limit"
 
-    # #15: Use global httpx client instead of creating per-request
     client = _apns_client
     if client is None:
         return False, "APNs client not initialized"
@@ -279,9 +241,6 @@ async def _send_apns_push(push_token: str, payload: dict) -> tuple[bool, str]:
         return False, str(e)
 
 
-# --- Models ---
-
-
 class EntityConfig(BaseModel):
     entity_id: str
     icon_name: str = "timer"
@@ -307,29 +266,22 @@ class UpdateRequest(BaseModel):
     invert_progress: bool = False
 
 
-# --- Endpoints ---
-
-
 @app.on_event("startup")
 async def startup():
     global _apns_client
     _load_or_generate_api_key()
-    # #12: Load persisted devices
     _load_devices()
-    # #16: Cache APNs key at startup
     try:
         _load_apns_key()
         log.info("APNs key loaded OK")
     except RuntimeError as e:
         log.warning("APNs key missing: %s", e)
-    # #15: Create global httpx client
     _apns_client = httpx.AsyncClient(http2=True)
     log.info("Push Relay started (sandbox=%s, port=8765)", APNS_USE_SANDBOX)
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    """#15: Clean up global httpx client on shutdown."""
     global _apns_client
     if _apns_client:
         await _apns_client.aclose()
@@ -339,7 +291,6 @@ async def shutdown():
 
 @app.get("/health")
 async def health():
-    # #11: Only return status, no device count for unauthenticated endpoint
     return {"status": "ok"}
 
 
@@ -350,17 +301,14 @@ async def register_device(req: RegisterRequest, request: Request):
     if not req.entity_ids:
         raise HTTPException(status_code=400, detail="At least one entity_id required")
 
-    # #17: Validate entity_id format
     for eid in req.entity_ids:
         if not _validate_entity_id(eid):
             raise HTTPException(status_code=400, detail=f"Invalid entity_id format: {eid}")
 
-    # #14: Rate limit registrations per IP
     client_ip = request.client.host if request.client else "unknown"
     if not _check_registration_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many registrations, try again later")
 
-    # #13: Reject if at device limit (unless updating existing device)
     if req.device_id not in registered_devices and len(registered_devices) >= MAX_DEVICES:
         raise HTTPException(status_code=429, detail=f"Maximum device limit ({MAX_DEVICES}) reached")
 
@@ -368,7 +316,6 @@ async def register_device(req: RegisterRequest, request: Request):
     if not all(c in "0123456789abcdefABCDEF" for c in clean_token):
         raise HTTPException(status_code=400, detail="Invalid push token format")
 
-    # Build entity config lookup
     configs = {}
     if req.entity_configs:
         for ec in req.entity_configs:
@@ -385,7 +332,6 @@ async def register_device(req: RegisterRequest, request: Request):
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # #12: Persist on every registration change
     _save_devices()
 
     log.info("Registered device %s for %s", req.device_id[:8], req.entity_ids)
@@ -396,7 +342,6 @@ async def register_device(req: RegisterRequest, request: Request):
 async def unregister_device(device_id: str):
     if device_id in registered_devices:
         del registered_devices[device_id]
-        # #12: Persist on every registration change
         _save_devices()
         return {"status": "unregistered"}
     raise HTTPException(status_code=404, detail="Device not found")
@@ -404,7 +349,6 @@ async def unregister_device(device_id: str):
 
 @app.post("/update", dependencies=[Depends(verify_api_key)])
 async def update_activity(req: UpdateRequest):
-    # #17: Validate entity_id format
     if not _validate_entity_id(req.entity_id):
         raise HTTPException(status_code=400, detail=f"Invalid entity_id format: {req.entity_id}")
 
@@ -412,23 +356,19 @@ async def update_activity(req: UpdateRequest):
     if not targets:
         return {"status": "no_targets", "message": "No devices registered for this entity"}
 
-    # Only send "start" if no activity exists yet for this entity.
-    # If one already exists (e.g. pause→resume), send "update" instead.
     is_new_start = req.state == "active" and req.entity_id not in _active_entities
     is_resume = req.state == "active" and req.entity_id in _active_entities
     is_end = req.state in ("finished", "idle")
 
-    # Track active entities
     if req.state == "active":
         _active_entities.add(req.entity_id)
     elif is_end:
         _active_entities.discard(req.entity_id)
 
-    APPLE_REFERENCE_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
+    APPLE_REFERENCE_OFFSET = 978307200
 
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
 
-    # Parse end_time (ISO8601 -> Apple reference date for Swift Codable)
     end_time_apple: float | None = None
     if req.end_time:
         try:
@@ -439,7 +379,6 @@ async def update_activity(req: UpdateRequest):
         except (ValueError, TypeError):
             log.warning("Could not parse end_time: %s", req.end_time)
 
-    # Parse total_duration (H:MM:SS string or numeric seconds)
     total_duration_secs: float | None = None
     if req.total_duration is not None:
         if isinstance(req.total_duration, str):
@@ -455,27 +394,23 @@ async def update_activity(req: UpdateRequest):
             total_duration_secs = float(req.total_duration)
 
     if is_end:
-        # For end events: endTime = now, totalDuration = 0 (timer is done)
         now_apple = time.time() - APPLE_REFERENCE_OFFSET
         content_state["endTime"] = now_apple
         content_state["totalDuration"] = total_duration_secs if total_duration_secs is not None else 0.0
         content_state["progress"] = 1.0
     else:
-        # For active/paused: use provided values
         if end_time_apple is not None:
             content_state["endTime"] = end_time_apple
         if total_duration_secs is not None:
             content_state["totalDuration"] = total_duration_secs
 
     if is_new_start:
-        # Look up entity config from registered device
         entity_config = _get_entity_config(req.entity_id)
         icon_name = entity_config.get("icon_name", "timer") if entity_config else "timer"
         color_hex = entity_config.get("color_hex", "#FF8C00") if entity_config else "#FF8C00"
         invert_progress = entity_config.get("invert_progress", False) if entity_config else False
         device_name = req.device_name or req.entity_id
 
-        # Start a NEW Live Activity via push
         payload = {
             "aps": {
                 "timestamp": int(time.time()),
@@ -497,7 +432,6 @@ async def update_activity(req: UpdateRequest):
         }
         log.info("New activity START for %s", req.entity_id)
     elif is_resume:
-        # Resume existing activity - send UPDATE, not a new START
         payload = {
             "aps": {
                 "timestamp": int(time.time()),
@@ -516,7 +450,6 @@ async def update_activity(req: UpdateRequest):
             },
         }
     else:
-        # Pause or other update
         payload = {
             "aps": {
                 "timestamp": int(time.time()),
@@ -533,12 +466,10 @@ async def update_activity(req: UpdateRequest):
             results.append({"device_id": device_id, "success": False, "error": "rate_limited"})
             continue
 
-        # #24: Check global rate limit
         if not _check_global_rate_limit():
             results.append({"device_id": device_id, "success": False, "error": "global_rate_limited"})
             continue
 
-        # #18: Full payload only at DEBUG level; INFO only logs entity_id
         log.debug("Sending payload: %s", json.dumps(payload, indent=2))
         success, msg = await _send_apns_push(push_token, payload)
         log.info("Push %s → entity=%s device=%s", "OK" if success else "FAIL", req.entity_id, device_id[:8])
@@ -556,7 +487,6 @@ def _find_devices_for_entity(entity_id: str) -> list[tuple[str, dict]]:
 
 
 def _get_entity_config(entity_id: str) -> dict | None:
-    """Look up entity config (icon, color, invertProgress) from any registered device."""
     for device in registered_devices.values():
         configs = device.get("entity_configs", {})
         if entity_id in configs:
@@ -569,8 +499,6 @@ async def generic_error_handler(request: Request, exc: Exception):
     log.exception("Unhandled error: %s", exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-
-# --- Run directly (for HA Add-on) ---
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8765, log_level="info", access_log=False)

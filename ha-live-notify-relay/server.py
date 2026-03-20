@@ -73,7 +73,7 @@ app = FastAPI(
 
 registered_devices: dict[str, dict] = {}
 # Track entities with active Live Activities to avoid duplicate starts
-_active_entities: set[str] = {}
+_active_entities: set[str] = set()
 push_timestamps: dict[str, list[float]] = {}
 # #24: Global push timestamps
 _global_push_timestamps: list[float] = []

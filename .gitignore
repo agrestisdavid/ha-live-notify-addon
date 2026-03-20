@@ -1,0 +1,15 @@
+# Secrets - NEVER commit these
+*.p8
+*.pem
+*.key
+.env
+api_key.txt
+devices.json
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/

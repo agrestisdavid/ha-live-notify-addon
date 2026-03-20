@@ -72,6 +72,8 @@ app = FastAPI(
 # --- State ---
 
 registered_devices: dict[str, dict] = {}
+# Track entities with active Live Activities to avoid duplicate starts
+_active_entities: set[str] = {}
 push_timestamps: dict[str, list[float]] = {}
 # #24: Global push timestamps
 _global_push_timestamps: list[float] = []
@@ -410,8 +412,17 @@ async def update_activity(req: UpdateRequest):
     if not targets:
         return {"status": "no_targets", "message": "No devices registered for this entity"}
 
-    is_start = req.state == "active"
+    # Only send "start" if no activity exists yet for this entity.
+    # If one already exists (e.g. pause→resume), send "update" instead.
+    is_new_start = req.state == "active" and req.entity_id not in _active_entities
+    is_resume = req.state == "active" and req.entity_id in _active_entities
     is_end = req.state in ("finished", "idle")
+
+    # Track active entities
+    if req.state == "active":
+        _active_entities.add(req.entity_id)
+    elif is_end:
+        _active_entities.discard(req.entity_id)
 
     APPLE_REFERENCE_OFFSET = 978307200  # seconds between 1970-01-01 and 2001-01-01
 
@@ -456,7 +467,7 @@ async def update_activity(req: UpdateRequest):
         if total_duration_secs is not None:
             content_state["totalDuration"] = total_duration_secs
 
-    if is_start:
+    if is_new_start:
         # Look up entity config from registered device
         entity_config = _get_entity_config(req.entity_id)
         icon_name = entity_config.get("icon_name", "timer") if entity_config else "timer"
@@ -484,6 +495,17 @@ async def update_activity(req: UpdateRequest):
                 },
             },
         }
+        log.info("New activity START for %s", req.entity_id)
+    elif is_resume:
+        # Resume existing activity - send UPDATE, not a new START
+        payload = {
+            "aps": {
+                "timestamp": int(time.time()),
+                "event": "update",
+                "content-state": content_state,
+            },
+        }
+        log.info("Resume UPDATE for %s", req.entity_id)
     elif is_end:
         payload = {
             "aps": {

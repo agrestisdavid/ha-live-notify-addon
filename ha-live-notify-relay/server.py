@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -58,6 +59,8 @@ app = FastAPI(
 
 registered_devices: dict[str, dict] = {}
 _active_entities: set[str] = set()
+_scheduled_finish_tasks: dict[str, asyncio.Task] = {}
+AUTO_FINISH_MAX_DELAY = 24 * 3600
 push_timestamps: dict[str, list[float]] = {}
 _global_push_timestamps: list[float] = []
 _apns_jwt_cache: dict[str, str | float] = {"token": "", "expires": 0}
@@ -283,6 +286,10 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     global _apns_client
+    for task in list(_scheduled_finish_tasks.values()):
+        if not task.done():
+            task.cancel()
+    _scheduled_finish_tasks.clear()
     if _apns_client:
         await _apns_client.aclose()
         _apns_client = None
@@ -347,6 +354,76 @@ async def unregister_device(device_id: str):
     raise HTTPException(status_code=404, detail="Device not found")
 
 
+def _cancel_scheduled_finish(entity_id: str) -> None:
+    task = _scheduled_finish_tasks.pop(entity_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+async def _auto_finish_entity(entity_id: str, delay: float, total_duration: float | None) -> None:
+    try:
+        if delay > 0:
+            await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+
+    if entity_id not in _active_entities:
+        _scheduled_finish_tasks.pop(entity_id, None)
+        return
+
+    _active_entities.discard(entity_id)
+
+    APPLE_REFERENCE_OFFSET = 978307200
+    now_apple = time.time() - APPLE_REFERENCE_OFFSET
+    content_state = {
+        "state": "finished",
+        "endTime": now_apple,
+        "totalDuration": total_duration if total_duration is not None else 0.0,
+        "progress": 1.0,
+    }
+    payload = {
+        "aps": {
+            "timestamp": int(time.time()),
+            "event": "end",
+            "content-state": content_state,
+            "dismissal-date": int(time.time()) + 10,
+        },
+    }
+
+    targets = _find_devices_for_entity(entity_id)
+    for device_id, device in targets:
+        push_token = device["push_token"]
+        if not _check_rate_limit(push_token):
+            log.warning("Auto-finish rate-limited for %s/%s", entity_id, device_id[:8])
+            continue
+        if not _check_global_rate_limit():
+            log.warning("Auto-finish global-rate-limited for %s", entity_id)
+            continue
+        success, msg = await _send_apns_push(push_token, payload)
+        log.info(
+            "Auto-finish %s → entity=%s device=%s (%s)",
+            "OK" if success else "FAIL",
+            entity_id,
+            device_id[:8],
+            msg,
+        )
+
+    _scheduled_finish_tasks.pop(entity_id, None)
+
+
+def _schedule_auto_finish(entity_id: str, end_dt: datetime, total_duration: float | None) -> None:
+    _cancel_scheduled_finish(entity_id)
+
+    delay = end_dt.timestamp() - time.time()
+    if delay > AUTO_FINISH_MAX_DELAY:
+        log.warning("Auto-finish delay too large for %s (%.0fs), skipping", entity_id, delay)
+        return
+
+    task = asyncio.create_task(_auto_finish_entity(entity_id, delay, total_duration))
+    _scheduled_finish_tasks[entity_id] = task
+    log.info("Scheduled auto-finish for %s in %.2fs", entity_id, max(0.0, delay))
+
+
 @app.post("/update", dependencies=[Depends(verify_api_key)])
 async def update_activity(req: UpdateRequest):
     if not _validate_entity_id(req.entity_id):
@@ -364,20 +441,24 @@ async def update_activity(req: UpdateRequest):
         _active_entities.add(req.entity_id)
     elif is_end:
         _active_entities.discard(req.entity_id)
+        _cancel_scheduled_finish(req.entity_id)
+    elif req.state == "paused":
+        _cancel_scheduled_finish(req.entity_id)
 
     APPLE_REFERENCE_OFFSET = 978307200
 
     content_state: dict = {"state": "finished" if req.state == "idle" else req.state}
 
     end_time_apple: float | None = None
+    end_dt: datetime | None = None
     if req.end_time:
         try:
-            from datetime import datetime as dt
-            end_dt = dt.fromisoformat(req.end_time)
+            end_dt = datetime.fromisoformat(req.end_time)
             unix_ts = end_dt.timestamp()
             end_time_apple = unix_ts - APPLE_REFERENCE_OFFSET
         except (ValueError, TypeError):
             log.warning("Could not parse end_time: %s", req.end_time)
+            end_dt = None
 
     total_duration_secs: float | None = None
     if req.total_duration is not None:
@@ -403,6 +484,9 @@ async def update_activity(req: UpdateRequest):
             content_state["endTime"] = end_time_apple
         if total_duration_secs is not None:
             content_state["totalDuration"] = total_duration_secs
+
+    if req.state == "active" and end_dt is not None:
+        _schedule_auto_finish(req.entity_id, end_dt, total_duration_secs)
 
     if is_new_start:
         entity_config = _get_entity_config(req.entity_id)
